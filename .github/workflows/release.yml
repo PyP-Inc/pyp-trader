@@ -20,35 +20,16 @@ jobs:
           Invoke-WebRequest -Uri "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" -OutFile "$env:TEMP\mt5setup.exe"
           Start-Process "$env:TEMP\mt5setup.exe" -ArgumentList "/auto" -Wait
           Start-Sleep -Seconds 45
-          # Find where it installed
-          Get-ChildItem "C:\Program Files" -Filter "metaeditor*" -Recurse -ErrorAction SilentlyContinue
-          Get-ChildItem "$env:APPDATA\MetaQuotes" -ErrorAction SilentlyContinue
-          Get-ChildItem "C:\Users\runneradmin\AppData\Roaming\MetaQuotes" -ErrorAction SilentlyContinue
 
       - name: Compile MT5 EA
         shell: powershell
         run: |
-          # Search common install locations
-          $locations = @(
-            "C:\Program Files\MetaTrader 5",
-            "C:\Program Files (x86)\MetaTrader 5",
-            "$env:APPDATA\MetaQuotes\Terminal",
-            "$env:LOCALAPPDATA\Programs\MetaTrader 5"
-          )
-          $metaeditor = $null
-          foreach ($loc in $locations) {
-            $found = Get-ChildItem $loc -Filter "metaeditor*.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found) { $metaeditor = $found.FullName; break }
-          }
-          if (-not $metaeditor) {
-            # Last resort: search entire C drive (slow but thorough)
-            $metaeditor = (Get-ChildItem "C:\" -Filter "metaeditor*.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)?.FullName
-          }
-          if (-not $metaeditor) {
-            Write-Host "MetaEditor not found after install"
+          $metaeditor = "C:\Program Files\MetaTrader 5\MetaEditor64.exe"
+          if (-not (Test-Path $metaeditor)) {
+            Write-Host "MetaEditor not found at expected path"
             exit 1
           }
-          Write-Host "Found MetaEditor at: $metaeditor"
+          Write-Host "Compiling with: $metaeditor"
           & $metaeditor /compile:"${{ github.workspace }}\mt5\PyP_EA.mq5" /log
           Start-Sleep -Seconds 5
 
@@ -68,7 +49,7 @@ jobs:
             ## PyP EA ${{ github.ref_name }}
 
             ### Installation
-            1. Download `PyP_EA.ex5` (MT5) 
+            1. Download `PyP_EA.ex5` (MT5)
             2. Copy to your MetaTrader `Experts` folder
             3. Restart MetaTrader, attach to chart, enter your EA Token from the [PyP dashboard](https://pyp.stanlink.online)
             4. Allow WebRequests for `https://api.pyp.stanlink.online` in Tools → Options → Expert Advisors
