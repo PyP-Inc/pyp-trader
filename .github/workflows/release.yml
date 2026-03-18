@@ -11,56 +11,54 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - platform: mt4
+            file: PyP_EA.mq4
+            output: PyP_EA.ex4
+            installer: https://download.mql5.com/cdn/web/metaquotes.software.corp/mt4/mt4setup.exe
+            editor: C:\Program Files (x86)\MetaTrader 4\metaeditor.exe
+          - platform: mt5
+            file: PyP_EA.mq5
+            output: PyP_EA.ex5
+            installer: https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe
+            editor: C:\Program Files\MetaTrader 5\MetaEditor64.exe
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install MetaTrader 5
+      - name: Install MetaTrader
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" -OutFile "$env:TEMP\mt5setup.exe"
-          Start-Process "$env:TEMP\mt5setup.exe" -ArgumentList "/auto" -Wait
+          Invoke-WebRequest -Uri "${{ matrix.installer }}" -OutFile "$env:TEMP\setup.exe"
+          Start-Process "$env:TEMP\setup.exe" -ArgumentList "/auto" -Wait
           Start-Sleep -Seconds 45
 
-      - name: Compile MT5 EA
+      - name: Compile EA
         shell: powershell
         run: |
-          $metaeditor = "C:\Program Files\MetaTrader 5\MetaEditor64.exe"
-          $src = "${{ github.workspace }}\mt5\PyP_EA.mq5"
-          $out = "${{ github.workspace }}\mt5"
-
-          Write-Host "Compiling..."
-          $proc = Start-Process -FilePath $metaeditor `
+          $src = "${{ github.workspace }}\${{ matrix.platform }}\${{ matrix.file }}"
+          $out = "${{ github.workspace }}\${{ matrix.platform }}"
+          $proc = Start-Process -FilePath "${{ matrix.editor }}" `
             -ArgumentList "/compile:`"$src`"", "/log:`"$out\compile.log`"" `
             -Wait -PassThru
-          Write-Host "MetaEditor exit code: $($proc.ExitCode)"
-
           if (Test-Path "$out\compile.log") { Get-Content "$out\compile.log" }
-
-          # MetaEditor outputs .ex5 next to the .mq5 source
-          if (Test-Path "$out\PyP_EA.ex5") {
-            Write-Host "Compiled successfully"
-          } else {
-            Write-Host "Compile failed - no .ex5 produced"
+          if (-not (Test-Path "$out\${{ matrix.output }}")) {
+            Write-Host "Compile failed"
             exit 1
           }
-
-      - name: Collect artifacts
-        shell: powershell
-        run: |
-          New-Item -ItemType Directory -Force -Path artifacts
-          if (Test-Path "mt5\PyP_EA.ex5") { Copy-Item "mt5\PyP_EA.ex5" artifacts\ }
-          Get-ChildItem artifacts\
-          if ((Get-ChildItem artifacts\).Count -eq 0) { Write-Host "No artifacts found"; exit 1 }
+          Write-Host "Compiled successfully"
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*
+          files: ${{ matrix.platform }}/${{ matrix.output }}
           body: |
             ## PyP EA ${{ github.ref_name }}
 
             ### Installation
-            1. Download `PyP_EA.ex5` (MT5)
+            1. Download `PyP_EA.ex4` (MT4) or `PyP_EA.ex5` (MT5)
             2. Copy to your MetaTrader `Experts` folder
             3. Restart MetaTrader, attach to chart, enter your EA Token from the [PyP dashboard](https://pyp.stanlink.online)
             4. Allow WebRequests for `https://api.pyp.stanlink.online` in Tools → Options → Expert Advisors
