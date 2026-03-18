@@ -29,9 +29,26 @@ jobs:
             Write-Host "MetaEditor not found at expected path"
             exit 1
           }
-          Write-Host "Compiling with: $metaeditor"
-          & $metaeditor /compile:"${{ github.workspace }}\mt5\PyP_EA.mq5" /log
-          Start-Sleep -Seconds 5
+          $src = "${{ github.workspace }}\mt5\PyP_EA.mq5"
+          # Copy source into MT5 Experts folder so includes resolve
+          $expertsDir = "C:\Program Files\MetaTrader 5\MQL5\Experts"
+          New-Item -ItemType Directory -Force -Path $expertsDir | Out-Null
+          Copy-Item $src $expertsDir
+          Write-Host "Compiling..."
+          & $metaeditor /compile:"$expertsDir\PyP_EA.mq5" /log
+          Start-Sleep -Seconds 10
+          # Show log if exists
+          $log = "$expertsDir\PyP_EA.log"
+          if (Test-Path $log) { Get-Content $log }
+          # Copy output back
+          $out = "$expertsDir\PyP_EA.ex5"
+          if (Test-Path $out) {
+            Copy-Item $out "${{ github.workspace }}\mt5\PyP_EA.ex5"
+            Write-Host "Compiled successfully"
+          } else {
+            Write-Host "Compile failed - no .ex5 produced"
+            exit 1
+          }
 
       - name: Collect artifacts
         shell: powershell
