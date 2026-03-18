@@ -25,25 +25,19 @@ jobs:
         shell: powershell
         run: |
           $metaeditor = "C:\Program Files\MetaTrader 5\MetaEditor64.exe"
-          if (-not (Test-Path $metaeditor)) {
-            Write-Host "MetaEditor not found at expected path"
-            exit 1
-          }
           $src = "${{ github.workspace }}\mt5\PyP_EA.mq5"
-          # Copy source into MT5 Experts folder so includes resolve
-          $expertsDir = "C:\Program Files\MetaTrader 5\MQL5\Experts"
-          New-Item -ItemType Directory -Force -Path $expertsDir | Out-Null
-          Copy-Item $src $expertsDir
+          $out = "${{ github.workspace }}\mt5"
+
           Write-Host "Compiling..."
-          & $metaeditor /compile:"$expertsDir\PyP_EA.mq5" /log
-          Start-Sleep -Seconds 10
-          # Show log if exists
-          $log = "$expertsDir\PyP_EA.log"
-          if (Test-Path $log) { Get-Content $log }
-          # Copy output back
-          $out = "$expertsDir\PyP_EA.ex5"
-          if (Test-Path $out) {
-            Copy-Item $out "${{ github.workspace }}\mt5\PyP_EA.ex5"
+          $proc = Start-Process -FilePath $metaeditor `
+            -ArgumentList "/compile:`"$src`"", "/log:`"$out\compile.log`"" `
+            -Wait -PassThru
+          Write-Host "MetaEditor exit code: $($proc.ExitCode)"
+
+          if (Test-Path "$out\compile.log") { Get-Content "$out\compile.log" }
+
+          # MetaEditor outputs .ex5 next to the .mq5 source
+          if (Test-Path "$out\PyP_EA.ex5") {
             Write-Host "Compiled successfully"
           } else {
             Write-Host "Compile failed - no .ex5 produced"
