@@ -5,29 +5,46 @@
 //+------------------------------------------------------------------+
 #property copyright "PyP Trading Platform"
 #property link      "https://pyp.stanlink.online"
-#property version   "1.00"
+#property version   "2.00"
 
-input string EAToken       = "";         // EA Token (from PyP dashboard)
-input string ApiUrl        = "https://api.pyp.stanlink.online"; // API URL
-input double LotSize       = 0.1;        // Lot Size
-input ulong  MagicNumber   = 20260101;   // Magic Number
-input int    Slippage      = 3;          // Slippage (points)
-input bool   EnableTrading = true;       // Enable Auto Trading
+#include <Trade\Trade.mqh>
+CTrade trade;
 
+//--- Inputs
+input string EAToken           = "";       // EA Token (from PyP dashboard)
+input string ApiUrl            = "https://api.pyp.stanlink.online"; // API URL
+input bool   EnableTrading     = true;     // Enable Auto Trading
+
+//--- Risk Management (0 = use server-calculated value)
+input double ManualLotSize     = 0;        // Lot Size (0 = server calculates)
+input double ManualSL_Pips     = 0;        // Stop Loss in pips (0 = server calculates)
+input double ManualTP_Pips     = 0;        // Take Profit in pips (0 = server calculates)
+input double MinConfidence     = 0.0;      // Min confidence to trade (0.0 = accept all)
+
+//--- Order Settings
+input ulong  MagicNumber       = 20260101; // Magic Number
+input int    Slippage          = 3;        // Slippage (points)
+input bool   CloseOnReverse    = true;     // Close opposite on reverse signal
+
+//--- Internal state
 datetime lastSignalTime = 0;
 
 //+------------------------------------------------------------------+
 int OnInit() {
    if (EAToken == "") {
-      Alert("PyP EA: EAToken is required. Get it from your PyP dashboard.");
+      Alert("PyP EA: EAToken is required. Get it from your PyP dashboard → Deployments → Generate EA Token.");
       return INIT_FAILED;
    }
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(Slippage);
    EventSetTimer(5);
-   Print("PyP EA initialized. Token: ", StringSubstr(EAToken, 0, 8), "...");
+   Print("PyP EA v2.0 initialized. Token: ", StringSubstr(EAToken, 0, 8), "...");
    return INIT_SUCCEEDED;
 }
 
-void OnDeinit(const int reason) { EventKillTimer(); }
+void OnDeinit(const int reason) {
+   EventKillTimer();
+}
 
 void OnTimer() {
    if (EnableTrading) FetchAndExecuteSignal();
@@ -35,15 +52,17 @@ void OnTimer() {
 
 //+------------------------------------------------------------------+
 void FetchAndExecuteSignal() {
-   string url     = ApiUrl + "/api/mt4/signals?token=" + EAToken + "&since=" + IntegerToString((long)lastSignalTime);
+   string url = ApiUrl + "/api/mt4/signals?token=" + EAToken
+              + "&since=" + IntegerToString((long)lastSignalTime);
    string headers = "Content-Type: application/json\r\n";
-   char   post[], result[];
+   char post[], result[];
    string resultHeaders;
 
    int res = WebRequest("GET", url, headers, 5000, post, result, resultHeaders);
+
    if (res == -1) {
       if (GetLastError() == 4060)
-         Print("PyP EA: Add ", ApiUrl, " to allowed URLs in Tools > Options > Expert Advisors");
+         Print("PyP EA: Add ", ApiUrl, " to allowed URLs → Tools > Options > Expert Advisors > Allow WebRequests");
       return;
    }
    if (res != 200) return;
@@ -51,49 +70,99 @@ void FetchAndExecuteSignal() {
    string body = CharArrayToString(result);
    if (StringFind(body, "signal") < 0) return;
 
-   string signal = ParseJsonString(body, "signal");
-   string pair   = ParseJsonString(body, "pair");
-   long   ts     = (long)ParseJsonDouble(body, "timestamp");
+   //--- Parse all fields
+   string signal     = ParseJsonString(body, "signal");
+   string pair       = ParseJsonString(body, "pair");
+   double confidence = ParseJsonDouble(body, "confidence");
+   double sl_price   = ParseJsonDouble(body, "sl");
+   double tp_price   = ParseJsonDouble(body, "tp");
+   double lot_size   = ParseJsonDouble(body, "lot_size");
+   long   ts         = (long)ParseJsonDouble(body, "timestamp");
 
+   //--- Deduplicate
    if (signal == "" || ts <= (long)lastSignalTime) return;
    lastSignalTime = (datetime)ts;
 
+   //--- Normalize pair
    StringReplace(pair, "/", "");
    StringReplace(pair, "_", "");
    if (pair == "") pair = Symbol();
 
-   Print("PyP EA: Signal=", signal, " Pair=", pair);
+   //--- Confidence gate
+   if (MinConfidence > 0.0 && confidence < MinConfidence) {
+      Print("PyP EA: Signal skipped — confidence ", DoubleToString(confidence, 2),
+            " below threshold ", DoubleToString(MinConfidence, 2));
+      return;
+   }
 
-   if (signal == "BUY")  ExecuteTrade(pair, ORDER_TYPE_BUY);
-   if (signal == "SELL") ExecuteTrade(pair, ORDER_TYPE_SELL);
+   Print("PyP EA: Signal=", signal,
+         " Pair=", pair,
+         " Conf=", DoubleToString(confidence, 2),
+         " SL=", DoubleToString(sl_price, 5),
+         " TP=", DoubleToString(tp_price, 5),
+         " Lots=", DoubleToString(lot_size, 2));
+
+   if (signal == "BUY")  ExecuteTrade(pair, ORDER_TYPE_BUY,  sl_price, tp_price, lot_size);
+   if (signal == "SELL") ExecuteTrade(pair, ORDER_TYPE_SELL, sl_price, tp_price, lot_size);
 }
 
 //+------------------------------------------------------------------+
-void ExecuteTrade(string pair, ENUM_ORDER_TYPE orderType) {
-   CloseOpposite(pair, orderType);
+void ExecuteTrade(string pair, ENUM_ORDER_TYPE orderType,
+                  double server_sl, double server_tp, double server_lots) {
+
+   if (CloseOnReverse) CloseOpposite(pair, orderType);
 
    double price = (orderType == ORDER_TYPE_BUY)
                   ? SymbolInfoDouble(pair, SYMBOL_ASK)
                   : SymbolInfoDouble(pair, SYMBOL_BID);
    if (price <= 0) return;
 
-   MqlTradeRequest req = {};
-   MqlTradeResult  res = {};
+   int    digits   = (int)SymbolInfoInteger(pair, SYMBOL_DIGITS);
+   double point    = SymbolInfoDouble(pair, SYMBOL_POINT);
+   double pipValue = (digits == 3 || digits == 5) ? point * 10 : point;
 
-   req.action    = TRADE_ACTION_DEAL;
-   req.symbol    = pair;
-   req.volume    = LotSize;
-   req.type      = orderType;
-   req.price     = price;
-   req.deviation = Slippage;
-   req.magic     = MagicNumber;
-   req.comment   = "PyP Signal";
-   req.type_filling = ORDER_FILLING_IOC;
+   //--- Resolve lot size
+   double lots = (ManualLotSize > 0) ? ManualLotSize
+               : (server_lots > 0)   ? server_lots
+               : 0.01;
 
-   if (!OrderSend(req, res))
-      Print("PyP EA: OrderSend failed, retcode=", res.retcode);
+   //--- Resolve SL
+   double sl = 0;
+   if (ManualSL_Pips > 0) {
+      sl = (orderType == ORDER_TYPE_BUY)
+           ? price - ManualSL_Pips * pipValue
+           : price + ManualSL_Pips * pipValue;
+   } else if (server_sl > 0) {
+      sl = server_sl;
+   }
+
+   //--- Resolve TP
+   double tp = 0;
+   if (ManualTP_Pips > 0) {
+      tp = (orderType == ORDER_TYPE_BUY)
+           ? price + ManualTP_Pips * pipValue
+           : price - ManualTP_Pips * pipValue;
+   } else if (server_tp > 0) {
+      tp = server_tp;
+   }
+
+   //--- Normalize
+   if (sl > 0) sl = NormalizeDouble(sl, digits);
+   if (tp > 0) tp = NormalizeDouble(tp, digits);
+
+   bool sent = (orderType == ORDER_TYPE_BUY)
+               ? trade.Buy(lots, pair, price, sl, tp, "PyP Signal")
+               : trade.Sell(lots, pair, price, sl, tp, "PyP Signal");
+
+   if (!sent)
+      Print("PyP EA: OrderSend failed, retcode=", trade.ResultRetcode());
    else
-      Print("PyP EA: Order opened ticket=", res.order, " price=", res.price);
+      Print("PyP EA: Order opened ticket=", trade.ResultOrder(),
+            " type=", (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL"),
+            " price=", DoubleToString(price, digits),
+            " SL=", DoubleToString(sl, digits),
+            " TP=", DoubleToString(tp, digits),
+            " lots=", DoubleToString(lots, 2));
 }
 
 //+------------------------------------------------------------------+
@@ -107,20 +176,7 @@ void CloseOpposite(string pair, ENUM_ORDER_TYPE newType) {
       ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
       if ((newType == ORDER_TYPE_BUY  && posType == POSITION_TYPE_SELL) ||
           (newType == ORDER_TYPE_SELL && posType == POSITION_TYPE_BUY)) {
-         MqlTradeRequest req = {};
-         MqlTradeResult  res = {};
-         req.action = TRADE_ACTION_DEAL;
-         req.position = ticket;
-         req.symbol = pair;
-         req.volume = PositionGetDouble(POSITION_VOLUME);
-         req.type   = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-         req.price  = (req.type == ORDER_TYPE_SELL)
-                      ? SymbolInfoDouble(pair, SYMBOL_BID)
-                      : SymbolInfoDouble(pair, SYMBOL_ASK);
-         req.deviation = Slippage;
-         req.magic  = MagicNumber;
-         req.type_filling = ORDER_FILLING_IOC;
-         OrderSend(req, res);
+         trade.PositionClose(ticket);
       }
    }
 }
