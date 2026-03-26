@@ -77,10 +77,15 @@ void FetchAndExecuteSignal() {
    //--- Parse all fields
    string signal     = ParseJsonString(body, "signal");
    string pair       = ParseJsonString(body, "pair");
+   string symbol     = ParseJsonString(body, "symbol");
    double confidence = ParseJsonDouble(body, "confidence");
    double sl_price   = ParseJsonDouble(body, "sl");
    double tp_price   = ParseJsonDouble(body, "tp");
    double lot_size   = ParseJsonDouble(body, "lot_size");
+   double risk_pct   = ParseJsonDouble(body, "risk_percent");
+   double sl_pct     = ParseJsonDouble(body, "stop_loss_percent");
+   double tp_pct     = ParseJsonDouble(body, "take_profit_percent");
+   double server_slippage = ParseJsonDouble(body, "slippage_pips");
    int    ts         = (int)ParseJsonDouble(body, "timestamp");
 
    //--- Deduplicate
@@ -88,6 +93,7 @@ void FetchAndExecuteSignal() {
    lastSignalTime = (datetime)ts;
 
    //--- Normalize pair
+   if (symbol != "") pair = symbol;
    StringReplace(pair, "/", "");
    StringReplace(pair, "_", "");
    if (pair == "") pair = Symbol();
@@ -106,15 +112,18 @@ void FetchAndExecuteSignal() {
          " TP=", DoubleToString(tp_price, 5),
          " Lots=", DoubleToString(lot_size, 2));
 
-   if (signal == "BUY")  ExecuteTrade(pair, OP_BUY,  sl_price, tp_price, lot_size);
-   if (signal == "SELL") ExecuteTrade(pair, OP_SELL, sl_price, tp_price, lot_size);
+   if (signal == "BUY")  ExecuteTrade(pair, OP_BUY,  sl_price, tp_price, lot_size, risk_pct, sl_pct, tp_pct, server_slippage);
+   if (signal == "SELL") ExecuteTrade(pair, OP_SELL, sl_price, tp_price, lot_size, risk_pct, sl_pct, tp_pct, server_slippage);
 }
 
 //+------------------------------------------------------------------+
 void ExecuteTrade(string pair, int orderType,
-                  double server_sl, double server_tp, double server_lots) {
+                  double server_sl, double server_tp, double server_lots,
+                  double risk_pct, double sl_pct, double tp_pct, double server_slippage_pips) {
 
    if (CloseOnReverse) CloseOpposite(pair, orderType);
+
+   RefreshRates();
 
    double price = (orderType == OP_BUY)
                   ? MarketInfo(pair, MODE_ASK)
@@ -128,11 +137,14 @@ void ExecuteTrade(string pair, int orderType,
    double point    = MarketInfo(pair, MODE_POINT);
    int    digits   = (int)MarketInfo(pair, MODE_DIGITS);
    double pipValue = (digits == 3 || digits == 5) ? point * 10 : point;
-
-   //--- Resolve lot size
-   double lots = (ManualLotSize > 0) ? ManualLotSize
-               : (server_lots > 0)   ? server_lots
-               : 0.01;
+   double tickValue = MarketInfo(pair, MODE_TICKVALUE);
+   double tickSize  = MarketInfo(pair, MODE_TICKSIZE);
+   double minLot    = MarketInfo(pair, MODE_MINLOT);
+   double maxLot    = MarketInfo(pair, MODE_MAXLOT);
+   double lotStep   = MarketInfo(pair, MODE_LOTSTEP);
+   int dynamicSlippage = (server_slippage_pips > 0)
+                         ? (int)MathMax(1, MathRound((server_slippage_pips * pipValue) / point))
+                         : Slippage;
 
    //--- Resolve SL
    double sl = 0;
@@ -142,7 +154,26 @@ void ExecuteTrade(string pair, int orderType,
            : price + ManualSL_Pips * pipValue;
    } else if (server_sl > 0) {
       sl = server_sl;
+   } else if (sl_pct > 0) {
+      double slDistance = price * (sl_pct / 100.0);
+      sl = (orderType == OP_BUY)
+           ? price - slDistance
+           : price + slDistance;
    }
+
+   //--- Resolve lot size
+   double lots = (ManualLotSize > 0) ? ManualLotSize : 0;
+   if (lots <= 0 && server_lots > 0) lots = server_lots;
+   if (lots <= 0 && risk_pct > 0 && sl > 0 && tickValue > 0 && tickSize > 0) {
+      double riskAmount = AccountBalance() * (risk_pct / 100.0);
+      double stopDistance = MathAbs(price - sl);
+      double lossPerLot = (stopDistance / tickSize) * tickValue;
+      if (lossPerLot > 0) lots = riskAmount / lossPerLot;
+   }
+   if (lots <= 0) lots = 0.01;
+   if (lotStep > 0) lots = MathFloor(lots / lotStep) * lotStep;
+   if (minLot > 0 && lots < minLot) lots = minLot;
+   if (maxLot > 0 && lots > maxLot) lots = maxLot;
 
    //--- Resolve TP
    double tp = 0;
@@ -152,13 +183,18 @@ void ExecuteTrade(string pair, int orderType,
            : price - ManualTP_Pips * pipValue;
    } else if (server_tp > 0) {
       tp = server_tp;
+   } else if (tp_pct > 0) {
+      double tpDistance = price * (tp_pct / 100.0);
+      tp = (orderType == OP_BUY)
+           ? price + tpDistance
+           : price - tpDistance;
    }
 
    //--- Normalize to broker precision
    if (sl > 0) sl = NormalizeDouble(sl, digits);
    if (tp > 0) tp = NormalizeDouble(tp, digits);
 
-   int ticket = OrderSend(pair, orderType, lots, price, Slippage,
+   int ticket = OrderSend(pair, orderType, lots, price, dynamicSlippage,
                           sl, tp, "PyP Signal", MagicNumber, 0,
                           orderType == OP_BUY ? clrGreen : clrRed);
 
