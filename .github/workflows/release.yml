@@ -57,8 +57,20 @@ jobs:
           body: |
             ## PyP EA ${{ github.ref_name }}
 
+            ### What's new in v3
+            - Better execution payload handling from PyP
+            - Uses server symbol mapping when available
+            - Converts server risk, SL, and TP percentages into executable trade parameters
+            - Improved lot sizing from risk percentage when direct lot size is not provided
+            - Better slippage handling for live broker execution
+            - MT4 and MT5 builds aligned to the same execution logic
+
             ### Installation
             1. Download `PyP_EA.ex4` (MT4) or `PyP_EA.ex5` (MT5)
             2. Copy to your MetaTrader `Experts` folder
             3. Restart MetaTrader, attach to chart, enter your EA Token from the [PyP dashboard](https://pyp.stanlink.online)
             4. Allow WebRequests for `https://api.pyp.stanlink.online` in Tools → Options → Expert Advisors
+
+            ### Notes
+            - Rebuild or replace older EA binaries to get the v3 execution fixes
+            - Broker-specific execution conditions like `off quotes` can still happen if the market is moving fast or the symbol is not mapped correctly
