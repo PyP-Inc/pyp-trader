@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "PyP Trading Platform"
 #property link      "https://pyp.stanlink.online"
-#property version   "2.00"
+#property version   "3.00"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
@@ -38,7 +38,7 @@ int OnInit() {
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(Slippage);
    EventSetTimer(5);
-   Print("PyP EA v2.0 initialized. Token: ", StringSubstr(EAToken, 0, 8), "...");
+   Print("PyP EA v3.0 initialized. Token: ", StringSubstr(EAToken, 0, 8), "...");
    return INIT_SUCCEEDED;
 }
 
