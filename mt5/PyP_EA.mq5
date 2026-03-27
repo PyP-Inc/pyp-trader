@@ -5,13 +5,14 @@
 //+------------------------------------------------------------------+
 #property copyright "PyP Trading Platform"
 #property link      "https://pyp.stanlink.online"
-#property version   "3.00"
+#property version   "3.10"
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //--- Inputs
 input string EAToken           = "";       // EA Token (from PyP dashboard)
+input string DeploymentId      = "";       // Optional deployment_id for exact routing
 input string ApiUrl            = "https://api.pyp.stanlink.online"; // API URL
 input bool   EnableTrading     = true;     // Enable Auto Trading
 
@@ -38,7 +39,7 @@ int OnInit() {
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(Slippage);
    EventSetTimer(5);
-   Print("PyP EA v3.0 initialized. Token: ", StringSubstr(EAToken, 0, 8), "...");
+   Print("PyP EA v3.1 initialized. Token: ", StringSubstr(EAToken, 0, 8), "...");
    return INIT_SUCCEEDED;
 }
 
@@ -52,8 +53,7 @@ void OnTimer() {
 
 //+------------------------------------------------------------------+
 void FetchAndExecuteSignal() {
-   string url = ApiUrl + "/api/mt4/signals?token=" + EAToken
-              + "&since=" + IntegerToString((long)lastSignalTime);
+   string url     = BuildSignalUrl();
    string headers = "Content-Type: application/json\r\n";
    char post[], result[];
    string resultHeaders;
@@ -65,7 +65,14 @@ void FetchAndExecuteSignal() {
          Print("PyP EA: Add ", ApiUrl, " to allowed URLs → Tools > Options > Expert Advisors > Allow WebRequests");
       return;
    }
-   if (res != 200) return;
+   if (res == 409) {
+      Print("PyP EA: ambiguous deployment. Set DeploymentId or use a deployment-specific EA token. Body=", CharArrayToString(result));
+      return;
+   }
+   if (res != 200) {
+      Print("PyP EA: API returned HTTP ", res, " Body=", CharArrayToString(result));
+      return;
+   }
 
    string body = CharArrayToString(result);
    if (StringFind(body, "signal") < 0) return;
@@ -74,6 +81,7 @@ void FetchAndExecuteSignal() {
    string signal     = ParseJsonString(body, "signal");
    string pair       = ParseJsonString(body, "pair");
    string symbol     = ParseJsonString(body, "symbol");
+   string deploymentId = ParseJsonString(body, "deployment_id");
    double confidence = ParseJsonDouble(body, "confidence");
    double sl_price   = ParseJsonDouble(body, "sl");
    double tp_price   = ParseJsonDouble(body, "tp");
@@ -101,7 +109,8 @@ void FetchAndExecuteSignal() {
       return;
    }
 
-   Print("PyP EA: Signal=", signal,
+   Print("PyP EA: Deployment=", (deploymentId == "" ? "(unresolved)" : deploymentId),
+         " Signal=", signal,
          " Pair=", pair,
          " Conf=", DoubleToString(confidence, 2),
          " SL=", DoubleToString(sl_price, 5),
@@ -110,6 +119,46 @@ void FetchAndExecuteSignal() {
 
    if (signal == "BUY")  ExecuteTrade(pair, ORDER_TYPE_BUY,  sl_price, tp_price, lot_size, risk_pct, sl_pct, tp_pct, server_slippage);
    if (signal == "SELL") ExecuteTrade(pair, ORDER_TYPE_SELL, sl_price, tp_price, lot_size, risk_pct, sl_pct, tp_pct, server_slippage);
+}
+
+string BuildSignalUrl() {
+   string pair = Symbol();
+   StringReplace(pair, "/", "");
+   StringReplace(pair, "_", "");
+   StringReplace(pair, " ", "");
+
+   string url = ApiUrl + "/api/mt4/signals?token=" + EAToken + "&since=" + IntegerToString((long)lastSignalTime);
+   if (DeploymentId != "") url += "&deployment_id=" + DeploymentId;
+   if (pair != "") url += "&pair=" + pair;
+   url += "&timeframe=" + NormalizeTimeframe(_Period);
+   return url;
+}
+
+string NormalizeTimeframe(ENUM_TIMEFRAMES tf) {
+   switch (tf) {
+      case PERIOD_M1: return "1m";
+      case PERIOD_M2: return "2m";
+      case PERIOD_M3: return "3m";
+      case PERIOD_M4: return "4m";
+      case PERIOD_M5: return "5m";
+      case PERIOD_M6: return "6m";
+      case PERIOD_M10: return "10m";
+      case PERIOD_M12: return "12m";
+      case PERIOD_M15: return "15m";
+      case PERIOD_M20: return "20m";
+      case PERIOD_M30: return "30m";
+      case PERIOD_H1: return "1h";
+      case PERIOD_H2: return "2h";
+      case PERIOD_H3: return "3h";
+      case PERIOD_H4: return "4h";
+      case PERIOD_H6: return "6h";
+      case PERIOD_H8: return "8h";
+      case PERIOD_H12: return "12h";
+      case PERIOD_D1: return "1d";
+      case PERIOD_W1: return "1w";
+      case PERIOD_MN1: return "1mo";
+   }
+   return "1h";
 }
 
 //+------------------------------------------------------------------+
