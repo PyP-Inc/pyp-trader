@@ -228,7 +228,7 @@ void ExecuteTrade(string pair, ENUM_ORDER_TYPE orderType,
    req.deviation = deviationPoints;
    req.magic     = MagicNumber;
    req.comment   = "PyP Signal";
-   req.type_filling = ORDER_FILLING_IOC;
+   req.type_filling = GetFillingMode(pair);
 
    if (!OrderSend(req, res))
       Print("PyP EA: OrderSend failed, retcode=", res.retcode);
@@ -264,10 +264,20 @@ void CloseOpposite(string pair, ENUM_ORDER_TYPE newType) {
                       : SymbolInfoDouble(pair, SYMBOL_ASK);
          req.deviation = Slippage;
          req.magic  = MagicNumber;
-         req.type_filling = ORDER_FILLING_IOC;
-         OrderSend(req, res);
+         req.type_filling = GetFillingMode(pair);
+         if (!OrderSend(req, res))
+            Print("PyP EA: Close opposite failed, retcode=", res.retcode);
       }
    }
+}
+
+ENUM_ORDER_TYPE_FILLING GetFillingMode(string pair) {
+   long fillingMode = 0;
+   if (SymbolInfoInteger(pair, SYMBOL_FILLING_MODE, fillingMode)) {
+      if ((fillingMode & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC) return ORDER_FILLING_IOC;
+      if ((fillingMode & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK) return ORDER_FILLING_FOK;
+   }
+   return ORDER_FILLING_RETURN;
 }
 
 //+------------------------------------------------------------------+
