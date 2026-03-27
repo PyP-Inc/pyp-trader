@@ -5,47 +5,32 @@
 //+------------------------------------------------------------------+
 #property copyright "PyP Trading Platform"
 #property link      "https://pyp.stanlink.online"
-#property version   "3.10"
+#property version   "3.20"
 
-#include <Trade\Trade.mqh>
-CTrade trade;
+input string EAToken       = "";         // EA Token (from PyP dashboard)
+input string DeploymentId  = "";         // Optional deployment_id for exact routing
+input string ApiUrl        = "https://api.pyp.stanlink.online"; // API URL
+input double LotSize       = 0.1;        // Lot Size
+input ulong  MagicNumber   = 20260101;   // Magic Number
+input int    Slippage      = 3;          // Slippage (points)
+input bool   EnableTrading = true;       // Enable Auto Trading
+input bool   TradeOnlyChartSymbol = true; // Ignore signals for other symbols on this chart
 
-//--- Inputs
-input string EAToken           = "";       // EA Token (from PyP dashboard)
-input string DeploymentId      = "";       // Optional deployment_id for exact routing
-input string ApiUrl            = "https://api.pyp.stanlink.online"; // API URL
-input bool   EnableTrading     = true;     // Enable Auto Trading
-
-//--- Risk Management (0 = use server-calculated value)
-input double ManualLotSize     = 0;        // Lot Size (0 = server calculates)
-input double ManualSL_Pips     = 0;        // Stop Loss in pips (0 = server calculates)
-input double ManualTP_Pips     = 0;        // Take Profit in pips (0 = server calculates)
-input double MinConfidence     = 0.0;      // Min confidence to trade (0.0 = accept all)
-
-//--- Order Settings
-input ulong  MagicNumber       = 20260101; // Magic Number
-input int    Slippage          = 3;        // Slippage (points)
-input bool   CloseOnReverse    = true;     // Close opposite on reverse signal
-
-//--- Internal state
 datetime lastSignalTime = 0;
 
 //+------------------------------------------------------------------+
 int OnInit() {
    if (EAToken == "") {
-      Alert("PyP EA: EAToken is required. Get it from your PyP dashboard → Deployments → Generate EA Token.");
+      Alert("PyP EA: EAToken is required. Get it from your PyP dashboard.");
       return INIT_FAILED;
    }
-   trade.SetExpertMagicNumber(MagicNumber);
-   trade.SetDeviationInPoints(Slippage);
+   lastSignalTime = (datetime)LoadState("last_ts");
    EventSetTimer(5);
-   Print("PyP EA v3.1 initialized. Token: ", StringSubstr(EAToken, 0, 8), "...");
+   Print("PyP EA v3.2 initialized. Token: ", StringSubstr(EAToken, 0, 8), "...");
    return INIT_SUCCEEDED;
 }
 
-void OnDeinit(const int reason) {
-   EventKillTimer();
-}
+void OnDeinit(const int reason) { EventKillTimer(); }
 
 void OnTimer() {
    if (EnableTrading) FetchAndExecuteSignal();
@@ -55,14 +40,13 @@ void OnTimer() {
 void FetchAndExecuteSignal() {
    string url     = BuildSignalUrl();
    string headers = "Content-Type: application/json\r\n";
-   char post[], result[];
+   char   post[], result[];
    string resultHeaders;
 
    int res = WebRequest("GET", url, headers, 5000, post, result, resultHeaders);
-
    if (res == -1) {
       if (GetLastError() == 4060)
-         Print("PyP EA: Add ", ApiUrl, " to allowed URLs → Tools > Options > Expert Advisors > Allow WebRequests");
+         Print("PyP EA: Add ", ApiUrl, " to allowed URLs in Tools > Options > Expert Advisors");
       return;
    }
    if (res == 409) {
@@ -77,48 +61,51 @@ void FetchAndExecuteSignal() {
    string body = CharArrayToString(result);
    if (StringFind(body, "signal") < 0) return;
 
-   //--- Parse all fields
-   string signal     = ParseJsonString(body, "signal");
-   string pair       = ParseJsonString(body, "pair");
-   string symbol     = ParseJsonString(body, "symbol");
+   string signal = ParseJsonString(body, "signal");
+   string pair   = ParseJsonString(body, "pair");
+   string symbol = ParseJsonString(body, "symbol");
    string deploymentId = ParseJsonString(body, "deployment_id");
-   double confidence = ParseJsonDouble(body, "confidence");
-   double sl_price   = ParseJsonDouble(body, "sl");
-   double tp_price   = ParseJsonDouble(body, "tp");
-   double lot_size   = ParseJsonDouble(body, "lot_size");
-   double risk_pct   = ParseJsonDouble(body, "risk_percent");
-   double sl_pct     = ParseJsonDouble(body, "stop_loss_percent");
-   double tp_pct     = ParseJsonDouble(body, "take_profit_percent");
-   double server_slippage = ParseJsonDouble(body, "slippage_pips");
-   long   ts         = (long)ParseJsonDouble(body, "timestamp");
+   string dispatchId = ParseJsonString(body, "dispatch_id");
+   double lotSizeFromServer = ParseJsonDouble(body, "lot_size");
+   double riskPercent = ParseJsonDouble(body, "risk_percent");
+   double slPercent = ParseJsonDouble(body, "stop_loss_percent");
+   double tpPercent = ParseJsonDouble(body, "take_profit_percent");
+   double slPrice = ParseJsonDouble(body, "sl");
+   double tpPrice = ParseJsonDouble(body, "tp");
+   double slippagePips = ParseJsonDouble(body, "slippage_pips");
+   double maxConcurrentTrades = ParseJsonDouble(body, "max_concurrent_trades");
+   long   ts     = (long)ParseJsonDouble(body, "timestamp");
 
-   //--- Deduplicate
    if (signal == "" || ts <= (long)lastSignalTime) return;
-   lastSignalTime = (datetime)ts;
-
-   //--- Normalize pair
    if (symbol != "") pair = symbol;
+
    StringReplace(pair, "/", "");
    StringReplace(pair, "_", "");
    if (pair == "") pair = Symbol();
 
-   //--- Confidence gate
-   if (MinConfidence > 0.0 && confidence < MinConfidence) {
-      Print("PyP EA: Signal skipped — confidence ", DoubleToString(confidence, 2),
-            " below threshold ", DoubleToString(MinConfidence, 2));
+   string chartPair = Symbol();
+   StringReplace(chartPair, "/", "");
+   StringReplace(chartPair, "_", "");
+   if (TradeOnlyChartSymbol && chartPair != "" && chartPair != pair) {
+      Print("PyP EA: Ignoring signal for ", pair, " on chart ", chartPair);
+      lastSignalTime = (datetime)ts;
+      SaveState("last_ts", (double)lastSignalTime);
       return;
    }
 
    Print("PyP EA: Deployment=", (deploymentId == "" ? "(unresolved)" : deploymentId),
          " Signal=", signal,
          " Pair=", pair,
-         " Conf=", DoubleToString(confidence, 2),
-         " SL=", DoubleToString(sl_price, 5),
-         " TP=", DoubleToString(tp_price, 5),
-         " Lots=", DoubleToString(lot_size, 2));
+         " Conf=", DoubleToString(ParseJsonDouble(body, "confidence"), 2),
+         " SL=", DoubleToString(slPrice, 5),
+         " TP=", DoubleToString(tpPrice, 5),
+         " Lots=", DoubleToString(lotSizeFromServer, 2));
 
-   if (signal == "BUY")  ExecuteTrade(pair, ORDER_TYPE_BUY,  sl_price, tp_price, lot_size, risk_pct, sl_pct, tp_pct, server_slippage);
-   if (signal == "SELL") ExecuteTrade(pair, ORDER_TYPE_SELL, sl_price, tp_price, lot_size, risk_pct, sl_pct, tp_pct, server_slippage);
+   lastSignalTime = (datetime)ts;
+   SaveState("last_ts", (double)lastSignalTime);
+
+   if (signal == "BUY")  ExecuteTrade(pair, ORDER_TYPE_BUY, slPrice, tpPrice, lotSizeFromServer, riskPercent, slPercent, tpPercent, slippagePips, (int)MathRound(maxConcurrentTrades), dispatchId);
+   if (signal == "SELL") ExecuteTrade(pair, ORDER_TYPE_SELL, slPrice, tpPrice, lotSizeFromServer, riskPercent, slPercent, tpPercent, slippagePips, (int)MathRound(maxConcurrentTrades), dispatchId);
 }
 
 string BuildSignalUrl() {
@@ -164,11 +151,15 @@ string NormalizeTimeframe(ENUM_TIMEFRAMES tf) {
 //+------------------------------------------------------------------+
 void ExecuteTrade(string pair, ENUM_ORDER_TYPE orderType,
                   double server_sl, double server_tp, double server_lots,
-                  double risk_pct, double sl_pct, double tp_pct, double server_slippage_pips) {
+                  double risk_pct, double sl_pct, double tp_pct, double server_slippage_pips,
+                  int maxConcurrentTrades, string dispatchId) {
+   CloseOpposite(pair, orderType);
 
-   if (CloseOnReverse) CloseOpposite(pair, orderType);
+   if (maxConcurrentTrades > 0 && CountOpenPositions(pair) >= maxConcurrentTrades) {
+      Print("PyP EA: Max concurrent trades reached for ", pair, " (", maxConcurrentTrades, "). Dispatch=", dispatchId);
+      return;
+   }
 
-   SymbolSelect(pair, true);
    double price = (orderType == ORDER_TYPE_BUY)
                   ? SymbolInfoDouble(pair, SYMBOL_ASK)
                   : SymbolInfoDouble(pair, SYMBOL_BID);
@@ -187,15 +178,12 @@ void ExecuteTrade(string pair, ENUM_ORDER_TYPE orderType,
    if (server_slippage_pips > 0) {
       deviationPoints = (int)MathMax(1, MathRound((server_slippage_pips * pipValue) / point));
    }
-   trade.SetDeviationInPoints(deviationPoints);
 
-   //--- Resolve SL
+   MqlTradeRequest req = {};
+   MqlTradeResult  res = {};
+
    double sl = 0;
-   if (ManualSL_Pips > 0) {
-      sl = (orderType == ORDER_TYPE_BUY)
-           ? price - ManualSL_Pips * pipValue
-           : price + ManualSL_Pips * pipValue;
-   } else if (server_sl > 0) {
+   if (server_sl > 0) {
       sl = server_sl;
    } else if (sl_pct > 0) {
       double slDistance = price * (sl_pct / 100.0);
@@ -204,9 +192,7 @@ void ExecuteTrade(string pair, ENUM_ORDER_TYPE orderType,
            : price + slDistance;
    }
 
-   //--- Resolve lot size
-   double lots = (ManualLotSize > 0) ? ManualLotSize : 0;
-   if (lots <= 0 && server_lots > 0) lots = server_lots;
+   double lots = server_lots > 0 ? server_lots : LotSize;
    if (lots <= 0 && risk_pct > 0 && sl > 0 && tickValue > 0 && tickSize > 0) {
       double riskAmount = AccountInfoDouble(ACCOUNT_BALANCE) * (risk_pct / 100.0);
       double stopDistance = MathAbs(price - sl);
@@ -218,13 +204,8 @@ void ExecuteTrade(string pair, ENUM_ORDER_TYPE orderType,
    if (volumeMin > 0 && lots < volumeMin) lots = volumeMin;
    if (volumeMax > 0 && lots > volumeMax) lots = volumeMax;
 
-   //--- Resolve TP
    double tp = 0;
-   if (ManualTP_Pips > 0) {
-      tp = (orderType == ORDER_TYPE_BUY)
-           ? price + ManualTP_Pips * pipValue
-           : price - ManualTP_Pips * pipValue;
-   } else if (server_tp > 0) {
+   if (server_tp > 0) {
       tp = server_tp;
    } else if (tp_pct > 0) {
       double tpDistance = price * (tp_pct / 100.0);
@@ -233,19 +214,26 @@ void ExecuteTrade(string pair, ENUM_ORDER_TYPE orderType,
            : price - tpDistance;
    }
 
-   //--- Normalize
    if (sl > 0) sl = NormalizeDouble(sl, digits);
    if (tp > 0) tp = NormalizeDouble(tp, digits);
    lots = NormalizeDouble(lots, 2);
 
-   bool sent = (orderType == ORDER_TYPE_BUY)
-               ? trade.Buy(lots, pair, 0.0, sl, tp, "PyP Signal")
-               : trade.Sell(lots, pair, 0.0, sl, tp, "PyP Signal");
+   req.action    = TRADE_ACTION_DEAL;
+   req.symbol    = pair;
+   req.volume    = lots;
+   req.type      = orderType;
+   req.price     = price;
+    req.sl       = sl;
+    req.tp       = tp;
+   req.deviation = deviationPoints;
+   req.magic     = MagicNumber;
+   req.comment   = "PyP Signal";
+   req.type_filling = ORDER_FILLING_IOC;
 
-   if (!sent)
-      Print("PyP EA: OrderSend failed, retcode=", trade.ResultRetcode());
+   if (!OrderSend(req, res))
+      Print("PyP EA: OrderSend failed, retcode=", res.retcode);
    else
-      Print("PyP EA: Order opened ticket=", trade.ResultOrder(),
+      Print("PyP EA: Order opened ticket=", res.order,
             " type=", (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL"),
             " price=", DoubleToString(price, digits),
             " SL=", DoubleToString(sl, digits),
@@ -264,7 +252,20 @@ void CloseOpposite(string pair, ENUM_ORDER_TYPE newType) {
       ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
       if ((newType == ORDER_TYPE_BUY  && posType == POSITION_TYPE_SELL) ||
           (newType == ORDER_TYPE_SELL && posType == POSITION_TYPE_BUY)) {
-         trade.PositionClose(ticket);
+         MqlTradeRequest req = {};
+         MqlTradeResult  res = {};
+         req.action = TRADE_ACTION_DEAL;
+         req.position = ticket;
+         req.symbol = pair;
+         req.volume = PositionGetDouble(POSITION_VOLUME);
+         req.type   = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+         req.price  = (req.type == ORDER_TYPE_SELL)
+                      ? SymbolInfoDouble(pair, SYMBOL_BID)
+                      : SymbolInfoDouble(pair, SYMBOL_ASK);
+         req.deviation = Slippage;
+         req.magic  = MagicNumber;
+         req.type_filling = ORDER_FILLING_IOC;
+         OrderSend(req, res);
       }
    }
 }
@@ -293,5 +294,36 @@ double ParseJsonDouble(string json, string key) {
       end++;
    }
    return StringToDouble(StringSubstr(json, start, end - start));
+}
+
+int CountOpenPositions(string pair) {
+   int count = 0;
+   for (int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if (!PositionSelectByTicket(ticket)) continue;
+      if (PositionGetString(POSITION_SYMBOL) != pair) continue;
+      if ((long)PositionGetInteger(POSITION_MAGIC) != (long)MagicNumber) continue;
+      count++;
+   }
+   return count;
+}
+
+string StateKey(string suffix) {
+   string tokenPrefix = StringSubstr(EAToken, 0, MathMin(8, StringLen(EAToken)));
+   string deploymentPart = DeploymentId != "" ? DeploymentId : Symbol();
+   string key = "PyP_" + tokenPrefix + "_" + deploymentPart + "_" + suffix;
+   StringReplace(key, "/", "_");
+   StringReplace(key, " ", "_");
+   return key;
+}
+
+double LoadState(string suffix) {
+   string key = StateKey(suffix);
+   if (!GlobalVariableCheck(key)) return 0;
+   return GlobalVariableGet(key);
+}
+
+void SaveState(string suffix, double value) {
+   GlobalVariableSet(StateKey(suffix), value);
 }
 //+------------------------------------------------------------------+
