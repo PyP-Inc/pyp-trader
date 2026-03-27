@@ -47,7 +47,7 @@ void OnTimer() {
 //+------------------------------------------------------------------+
 void FetchAndExecuteSignal() {
    string url     = BuildSignalUrl();
-   string headers = "Content-Type: application/json\r\n";
+   string headers = "Content-Type: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\n";
    char   post[];
    char   result[];
    string resultHeaders;
@@ -67,7 +67,11 @@ void FetchAndExecuteSignal() {
    }
 
    if (res != 200) {
-      Print("PyP EA: API returned HTTP ", res, " Body=", CharArrayToString(result));
+      if (res >= 1000) {
+         Print("PyP EA: Transport code ", res, " URL=", url, " Headers=", resultHeaders, " Body=", CharArrayToString(result));
+      } else {
+         Print("PyP EA: API returned HTTP ", res, " URL=", url, " Headers=", resultHeaders, " Body=", CharArrayToString(result));
+      }
       return;
    }
 
