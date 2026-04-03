@@ -28,18 +28,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve release notes
-        id: notes
-        shell: powershell
-        run: |
-          $tag = "${{ github.ref_name }}"
-          $notesPath = Join-Path "${{ github.workspace }}" "release-notes\$tag.md"
-          if (-not (Test-Path $notesPath)) {
-            Write-Host "Missing release notes file: $notesPath"
-            exit 1
-          }
-          "path=$notesPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
       - name: Install MetaTrader
         shell: powershell
         run: |
@@ -66,4 +54,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.platform }}/${{ matrix.output }}
-          body_path: ${{ steps.notes.outputs.path }}
+          body: |
+            ## PyP EA ${{ github.ref_name }}
+
+            ### Installation
+            1. Download `PyP_EA.ex4` (MT4) or `PyP_EA.ex5` (MT5)
+            2. Copy to your MetaTrader `Experts` folder
+            3. Restart MetaTrader, attach to chart, enter your EA Token from the [PyP dashboard](https://pyp.stanlink.online)
+            4. Allow WebRequests for `https://api.pyp.stanlink.online` in Tools → Options → Expert Advisors
